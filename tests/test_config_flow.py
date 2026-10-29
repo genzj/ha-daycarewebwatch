@@ -127,8 +127,10 @@ async def test_options_flow(
     await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
 
+    hass.config.time_zone = "America/Vancouver"
     result = await hass.config_entries.options.async_init(config_entry.entry_id)
     assert result["type"] is FlowResultType.FORM
+    assert result["description_placeholders"] == {"time_zone": "America/Vancouver"}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {"window_start": "18:00:00", "window_end": "07:00:00", "window_days": ["mon"]},
@@ -136,8 +138,14 @@ async def test_options_flow(
     assert result["errors"] == {"window_end": "end_before_start"}
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {"window_start": "07:00:00", "window_end": "18:00:00", "window_days": ["mon", "sat"]},
+        {
+            "window_start": "07:00:00",
+            "window_end": "18:00:00",
+            "window_days": ["mon", "sat"],
+            "use_webrtc": True,
+        },
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert config_entry.options["use_webrtc"] is True
     await hass.async_block_till_done()
     assert config_entry.runtime_data.status.window.days == frozenset({0, 5})

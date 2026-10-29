@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- New option **Use WebRTC (go2rtc)**, off by default: go2rtc 1.9.x crashes on these streams (affecting all
+  cameras using it) and each WebRTC start requests another stream link. Cameras use HA's HLS player.
+- Debug logging explains every request (endpoint, camera, result, request number) and every token/stream
+  decision; tokens are never logged. Diagnostics include request counts per endpoint.
+- The options dialog shows the time zone the opening hours use (Home Assistant's).
+- README: exact steps for live view, debug logging, Preload camera stream; WebRTC and time zone sections.
+
 - Check viewing status by opening the camera (`viewcamera`); `checkcamerapermission` only works for an
   already-open stream.
 - Handle server refusals by their message: the live server's error numbers differ from the app's.

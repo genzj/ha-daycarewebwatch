@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Generator
 from unittest.mock import AsyncMock, patch
 
@@ -56,6 +57,7 @@ def mock_client() -> Generator[AsyncMock]:
         ),
     ):
         client = cls.return_value
+        client.request_counts = Counter({"viewcamera": 2})
         client.async_get_cameras.return_value = make_cameras()
         client.async_get_stream_url.return_value = "http://wowza1.example/s.m3u8?tok"
         yield client

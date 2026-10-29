@@ -145,6 +145,7 @@ async def test_login_and_list(client: DaycareWebWatchClient, m: FakeServer) -> N
         assert "SessionId" not in body
         assert json.loads(body["DeviceInfo"])["DeviceUUID"] == INSTANCE_ID
         assert m.bodies[CHILDREN][0]["SessionId"] == "sess"
+        assert client.request_counts == {"ip.php": 1, "login": 1, "parentchildren": 1}
 
 
 async def test_relogin_on_refusal(client: DaycareWebWatchClient, m: FakeServer) -> None:

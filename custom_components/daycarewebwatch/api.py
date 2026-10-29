@@ -7,6 +7,7 @@ library later. It mirrors the request flow of the official Android app.
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import IntEnum
 import hashlib
@@ -169,6 +170,8 @@ class DaycareWebWatchClient:
         self._session_id: str | None = None
         self._public_ip: str | None = None
         self._login_lock = asyncio.Lock()
+        # Requests sent per endpoint since start (shown in diagnostics).
+        self.request_counts: Counter[str] = Counter()
 
     @property
     def device_info(self) -> str:
@@ -194,6 +197,7 @@ class DaycareWebWatchClient:
 
     async def _get_public_ip(self) -> str:
         if self._public_ip is None:
+            self.request_counts["ip.php"] += 1
             try:
                 async with self._session.get(IP_URL, timeout=REQUEST_TIMEOUT) as resp:
                     resp.raise_for_status()
@@ -218,6 +222,8 @@ class DaycareWebWatchClient:
         self, path: str, data: dict[str, str], with_session: bool
     ) -> dict[str, Any]:
         payload = await self._params(with_session) | data
+        self.request_counts[path] += 1
+        subject = f" camera {data['CameraId']}" if "CameraId" in data else ""
         try:
             async with self._session.post(
                 f"{BASE_URL}/mobile/{path}", data=payload, timeout=REQUEST_TIMEOUT
@@ -225,9 +231,21 @@ class DaycareWebWatchClient:
                 resp.raise_for_status()
                 result = json.loads(await resp.text())
         except (aiohttp.ClientError, TimeoutError, ValueError) as err:
+            _LOGGER.debug("POST %s%s -> failed: %s", path, subject, err)
             raise CannotConnect(f"Request to {path} failed: {err}") from err
         if not isinstance(result, dict):
             raise CannotConnect(f"Unexpected response from {path}")
+        if (code := self._error_code(result)) is None:
+            _LOGGER.debug("POST %s%s -> ok (#%d)", path, subject, self.request_counts[path])
+        else:
+            _LOGGER.debug(
+                "POST %s%s -> refused, code %s: %s (#%d)",
+                path,
+                subject,
+                code,
+                self._message(result),
+                self.request_counts[path],
+            )
         return result
 
     @staticmethod

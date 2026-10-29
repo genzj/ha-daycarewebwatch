@@ -11,6 +11,10 @@ CONF_INSTANCE_ID: Final = "instance_id"
 CONF_WINDOW_START: Final = "window_start"
 CONF_WINDOW_END: Final = "window_end"
 CONF_WINDOW_DAYS: Final = "window_days"
+CONF_USE_WEBRTC: Final = "use_webrtc"
+# go2rtc (HA's WebRTC server) crashes on these streams, and every WebRTC
+# offer requests another stream URL; HA's own HLS player works fine.
+DEFAULT_USE_WEBRTC: Final = False
 
 # Monday=0 ... Sunday=6, matching datetime.weekday().
 WEEKDAYS: Final = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]

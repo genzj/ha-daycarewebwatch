@@ -16,6 +16,7 @@ from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
@@ -29,9 +30,11 @@ import probatio as vol
 from .api import CannotConnect, DaycareWebWatchClient, InvalidAuth, UnsupportedApiVersion
 from .const import (
     CONF_INSTANCE_ID,
+    CONF_USE_WEBRTC,
     CONF_WINDOW_DAYS,
     CONF_WINDOW_END,
     CONF_WINDOW_START,
+    DEFAULT_USE_WEBRTC,
     DEFAULT_WINDOW_DAYS,
     DEFAULT_WINDOW_END,
     DEFAULT_WINDOW_START,
@@ -202,10 +205,15 @@ class DaycareWebWatchOptionsFlow(OptionsFlowWithReload):
                         translation_key="weekday",
                     )
                 ),
+                vol.Required(
+                    CONF_USE_WEBRTC,
+                    default=options.get(CONF_USE_WEBRTC, DEFAULT_USE_WEBRTC),
+                ): BooleanSelector(),
             }
         )
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(schema, user_input),
+            description_placeholders={"time_zone": self.hass.config.time_zone},
             errors=errors,
         )

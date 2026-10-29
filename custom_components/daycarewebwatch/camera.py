@@ -28,7 +28,13 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .api import Camera as DwwCamera, DaycareWebWatchError, ViewingClosed
-from .const import STREAM_CHECK_INTERVAL, STREAM_MIN_REFRESH_INTERVAL, TOKEN_REUSE_MAX_AGE
+from .const import (
+    CONF_USE_WEBRTC,
+    DEFAULT_USE_WEBRTC,
+    STREAM_CHECK_INTERVAL,
+    STREAM_MIN_REFRESH_INTERVAL,
+    TOKEN_REUSE_MAX_AGE,
+)
 from .coordinator import DaycareWebWatchConfigEntry, DaycareWebWatchData, ViewingStatus
 from .entity import DaycareWebWatchEntity
 from .helpers import async_add_new_cameras
@@ -115,7 +121,10 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
         """
         recent = self.coordinator.recent_url(self.camera_id)
         if recent is not None and recent[0] != avoid:
+            age = (dt_util.utcnow() - recent[1]).total_seconds()
+            _LOGGER.debug("Camera %s: reusing stream URL issued %ds ago", self.camera_id, age)
             return recent
+        _LOGGER.debug("Camera %s: requesting a new stream URL", self.camera_id)
         if (camera := self.camera) is None:
             return None
         try:
@@ -149,6 +158,7 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
         """Give a new viewer of an idle stream a URL that can still connect."""
         stream = self.stream
         if stream is not None and not stream.outputs() and self._source_is_stale():
+            _LOGGER.debug("Camera %s: idle stream has an expired URL, replacing", self.camera_id)
             await self._async_drop_stream()
         stream = await super().async_create_stream()
         if stream is not None and stream is not self._watched:
@@ -165,6 +175,7 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
             self.coordinator.streaming.add(self.camera_id)
         else:
             self.coordinator.streaming.discard(self.camera_id)
+        _LOGGER.debug("Camera %s: stream %s", self.camera_id, "up" if stream.available else "down")
         if not stream.available:
             self.hass.async_create_task(self._async_check_stream())
         self.async_write_ha_state()
@@ -189,6 +200,11 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
         if (stream := self.stream) is None:
             return
         if not self.is_on or not stream.outputs():
+            _LOGGER.debug(
+                "Camera %s: closing stream (%s)",
+                self.camera_id,
+                "camera off" if not self.is_on else "no viewers",
+            )
             await self._async_drop_stream()
             return
         if stream.available:
@@ -197,7 +213,9 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
         if self._last_refresh is not None and now - self._last_refresh < (
             STREAM_MIN_REFRESH_INTERVAL
         ):
+            _LOGGER.debug("Camera %s: stream failed, waiting before retrying", self.camera_id)
             return
+        _LOGGER.debug("Camera %s: stream failed, restarting it", self.camera_id)
         self._last_refresh = now
         if (result := await self._async_url(avoid=str(stream.source))) is None:
             if not self.is_on:
@@ -206,7 +224,19 @@ class DaycareCamera(DaycareWebWatchEntity, Camera):
         url, self._source_issued = result
         stream.update_source(url)
 
-    # -- stills -----------------------------------------------------------------
+    # -- WebRTC -----------------------------------------------------------------
+
+    async def async_refresh_providers(self, *, write_state: bool = True) -> None:
+        """Only offer WebRTC (go2rtc) when the user opted in.
+
+        Without a WebRTC provider the frontend uses HA's HLS player directly.
+        Skipping provider selection also avoids its stream_source() call.
+        """
+        options = self.coordinator.config_entry.options
+        if options.get(CONF_USE_WEBRTC, DEFAULT_USE_WEBRTC):
+            await super().async_refresh_providers(write_state=write_state)
+
+        # -- stills -----------------------------------------------------------------
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None

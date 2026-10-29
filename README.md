@@ -75,16 +75,33 @@ added once. Add a second entry for a second parent account.
 
 ### Options
 
-Open **Settings → Devices & services → DaycareWebWatch → Configure** to set when your daycare is normally open:
+Open **Settings → Devices & services → DaycareWebWatch → Configure**:
 
 | Option | Default | Description |
 |---|---|---|
-| Opens at | 06:30 | Local time when cameras usually become viewable. |
-| Closes at | 18:30 | Local time after which cameras are usually off. |
+| Opens at | 06:30 | Time when cameras usually become viewable. |
+| Closes at | 18:30 | Time after which cameras are usually off. |
 | Open on | Monday–Friday | Days of the week the daycare is open. |
+| Use WebRTC (go2rtc) | Off | Play through Home Assistant's go2rtc/WebRTC server instead of the built-in HLS player. See [WebRTC](#webrtc-go2rtc). |
 
-These settings only control **how often** the integration checks a closed camera. They never block viewing:
+The opening hours only control **how often** the integration checks a closed camera. They never block viewing:
 if the daycare opens early, the camera turns on as soon as the next check sees it.
+
+**Time zone:** the times are in Home Assistant's time zone (**Settings → System → General → Time zone**), not the
+server or container clock, which is often UTC. The options dialog shows the zone in use. If your daycare is in a
+different time zone than your Home Assistant, enter its hours converted to your Home Assistant's time zone.
+
+### WebRTC (go2rtc)
+
+By default these cameras play through Home Assistant's built-in HLS player. With **Use WebRTC (go2rtc)** on,
+the frontend tries WebRTC first and falls back to HLS. It is off by default because:
+
+- go2rtc 1.9.x crashes on these streams (`panic: runtime error: index out of range` in `h264.RepairAVCC` in the
+  log). Each crash restarts go2rtc and interrupts the live view of **all** your cameras that use it.
+- Every WebRTC start asks the service for another stream link.
+
+The stream uses 10-second segments, so WebRTC wouldn't reduce latency much anyway. Turn it on if your go2rtc version
+handles the stream.
 
 ## Entities
 
@@ -120,6 +137,23 @@ the whole daycare is closed, only one camera per daycare is checked.
 
 Your account can list cameras that you are not allowed to watch (for example other classrooms). They appear
 with *Viewing available* off and the service's reason, and are checked at most once a day.
+
+## Watching live
+
+- **Quickest:** click the camera entity anywhere (device page, entity list, dashboard). The pop-up plays the live
+  stream.
+- **Dashboard card:** **Edit dashboard → + Add card → Picture entity**, pick the camera, and set **Camera view** to
+  **Live**. Or paste in the card's code editor:
+
+  ```yaml
+  type: picture-entity
+  entity: camera.sunny_daycare_preschool_1   # find yours under Settings → Devices & services → Entities
+  camera_view: live
+  ```
+
+  With **Camera view: Auto** the card shows the still picture (a placeholder until someone has watched).
+- **Preload camera stream** (camera entity → ⚙ Settings) is off by default. Keep it off: it keeps the stream,
+  and the connection to the service, open all the time.
 
 ## Examples
 
@@ -169,8 +203,9 @@ automation:
   your configured opening hours, or at the first check at the configured opening time.
 - The service has no snapshot endpoint. To avoid opening the camera for every dashboard refresh, the camera
   picture is a placeholder until someone watches the live view; after that it shows the last captured frame.
-  Use `camera_view: live` in picture cards to watch, and leave **Preload stream** (camera entity settings) off,
-  as it keeps the stream open around the clock.
+  To watch, open the camera (click it), or use a picture card set to live view (see
+  [Watching live](#watching-live)). Leave **Preload camera stream** off, as it keeps the stream open around the
+  clock.
 - Low-bandwidth mode, recorded videos and the other app features are not supported.
 - The service ties sessions to your public IP address. If your IP changes, the integration signs in again
   automatically.
@@ -186,22 +221,41 @@ automation:
 | Camera is *unavailable* | Home Assistant cannot reach DaycareWebWatch. It recovers on its own; check your internet connection. |
 | Live view fails with 404 / random "Access Denied" | Stream tokens are bound to your public IP. Networks that spread connections over several public IPs (corporate networks, some VPNs, load-balanced NAT) break them. Run Home Assistant on a connection with a single public IP; `scripts/smoke.py` prints a warning when it detects this. |
 | Live view does not start | Make sure the `stream` integration works (it is part of `default_config`). Download diagnostics and check the logs. |
+| Log full of `go2rtc` panics / other cameras' live views drop | Turn **Use WebRTC (go2rtc)** off in the options (the default). See [WebRTC](#webrtc-go2rtc). |
 | Repair: "API version not supported" | The service changed. Update the integration through HACS. |
 
-To enable debug logging, add the following to `configuration.yaml` and restart:
+### Debug logging
+
+1. Go to **Settings → Devices & services** and click the **DaycareWebWatch** card.
+2. On the integration page, open the **⋮** menu at the top right (not the one on the entry row) and select
+   **Enable debug logging**.
+3. Reproduce the problem. Watch the log live under **Settings → System → Logs → Show raw logs**.
+4. Open the same **⋮** menu and select **Disable debug logging**. The browser downloads the captured log.
+
+The log shows every request to the service and why it was made, with stream links and tokens left out:
+
+```text
+POST viewcamera camera 1234 -> ok (#3)
+Camera 1234: reusing stream URL issued 42s ago
+Status check camera 1234 skipped: being watched
+Viewing status: 1234=open, 1235=23; next check in 1:00:00
+```
+
+Or enable it in `configuration.yaml` and restart:
 
 ```yaml
 logger:
+  default: warning
   logs:
     custom_components.daycarewebwatch: debug
+    homeassistant.components.stream: debug   # optional: HLS worker connects and failures
 ```
-
-Or use **Enable debug logging** on the integration page.
 
 ### Diagnostics
 
 Go to **Settings → Devices & services → DaycareWebWatch → ⋮ → Download diagnostics**. Email, password,
-device id, children's names and stream links are removed from the file. Attach it when opening an issue.
+device id, children's names and stream links are removed from the file. It includes the number of requests sent
+to the service per endpoint since start. Attach it when opening an issue.
 
 ## Re-authentication and reconfiguration
 

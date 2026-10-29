@@ -236,6 +236,27 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
             else:
                 _LOGGER.info("Camera %s is not viewable: %s", name, status.reason)
 
+    def _skip_reason(
+        self,
+        camera: Camera,
+        previous: dict[int, ViewingStatus],
+        closed_daycares: dict[str, ViewingStatus],
+        now: datetime,
+    ) -> tuple[str, ViewingStatus] | None:
+        """Return why (and with which status) a camera needs no request now."""
+        held = self._hold_until.get(camera.id)
+        if held is not None and now < held and camera.id in previous:
+            retry = dt_util.as_local(held).isoformat(timespec="minutes")
+            return f"refused for today, retry at {retry}", previous[camera.id]
+        if camera.daycare_id in closed_daycares:
+            # The whole daycare is closed; no need to open its other cameras.
+            return "daycare closed", closed_daycares[camera.daycare_id]
+        if camera.id in self.streaming:
+            return "being watched", OPEN
+        if self.recent_url(camera.id) is not None:
+            return "opened less than 4 minutes ago", OPEN
+        return None
+
     async def _async_update_data(self) -> dict[int, ViewingStatus]:
         cameras = self.cameras.data or {}
         previous = self.data or {}
@@ -245,21 +266,16 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         first = True
         try:
             for camera in sorted(cameras.values(), key=lambda c: (c.daycare_id, c.id)):
-                held = self._hold_until.get(camera.id)
-                if held is not None and now < held and camera.id in previous:
-                    data[camera.id] = previous[camera.id]
-                    continue
-                if camera.daycare_id in closed_daycares:
-                    # The whole daycare is closed; no need to open its other cameras.
-                    data[camera.id] = closed_daycares[camera.daycare_id]
+                if (
+                    skipped := self._skip_reason(camera, previous, closed_daycares, now)
+                ) is not None:
+                    reason, status = skipped
+                    _LOGGER.debug("Status check camera %s skipped: %s", camera.id, reason)
+                    data[camera.id] = status
                     continue
                 if not first:
                     await asyncio.sleep(PROBE_SPACING)
                 first = False
-                if camera.id in self.streaming or self.recent_url(camera.id) is not None:
-                    # Being watched, or opened moments ago: known to be open.
-                    data[camera.id] = OPEN
-                    continue
                 try:
                     url = await self.client.async_get_stream_url(camera)
                 except ViewingClosed as err:
@@ -291,6 +307,12 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         self._error_interval = None
         self._log_transitions(data)
         self.update_interval = self._interval_for(data, now)
+        _LOGGER.debug(
+            "Viewing status: %s; next check in %s",
+            ", ".join(f"{cid}={'open' if st.is_open else st.code}" for cid, st in data.items())
+            or "no cameras",
+            self.update_interval,
+        )
         return data
 
     def async_set_camera_status(self, camera_id: int, status: ViewingStatus) -> None:

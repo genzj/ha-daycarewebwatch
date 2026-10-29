@@ -51,17 +51,19 @@
   "options": {
     "step": {
       "init": {
-        "title": "Viewing window",
-        "description": "When the daycare is normally open. Outside this window, the integration checks for reopening much less often.",
+        "title": "Options",
+        "description": "When the daycare is normally open. Outside this window, the integration checks for reopening much less often. Times are in Home Assistant's time zone ({time_zone}); change it under Settings → System → General.",
         "data": {
           "window_start": "Opens at",
           "window_end": "Closes at",
-          "window_days": "Open on"
+          "window_days": "Open on",
+          "use_webrtc": "Use WebRTC (go2rtc)"
         },
         "data_description": {
           "window_start": "Local time when cameras usually become viewable.",
           "window_end": "Local time after which cameras are usually off.",
-          "window_days": "Days of the week the daycare is open."
+          "window_days": "Days of the week the daycare is open.",
+          "use_webrtc": "Let Home Assistant play these cameras through go2rtc/WebRTC. Off: use the built-in HLS player. Some go2rtc versions crash on these streams, and each WebRTC start requests an extra stream link."
         }
       }
     },

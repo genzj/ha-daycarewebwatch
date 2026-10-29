@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock
+import logging
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.config_entries import ConfigEntryState
@@ -572,6 +573,54 @@ async def test_coordinator_close_stops_stream(
     assert entity.stream is None
 
 
+@pytest.mark.parametrize("use_webrtc", [False, True])
+async def test_webrtc_is_opt_in(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+    use_webrtc: bool,
+) -> None:
+    provider = MagicMock(async_register_camera=AsyncMock(), async_unregister_camera=AsyncMock())
+    config_entry.add_to_hass(hass)
+    hass.config_entries.async_update_entry(config_entry, options={"use_webrtc": use_webrtc})
+    with patch(
+        "homeassistant.components.camera.async_get_supported_provider",
+        AsyncMock(return_value=provider),
+    ) as get_provider:
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+        entity = hass.data["camera"].get_entity(CAM1)
+        await entity.async_refresh_providers()
+    types = {str(t) for t in entity.camera_capabilities.frontend_stream_types}
+    if use_webrtc:
+        assert get_provider.await_count >= 1
+        assert types == {"hls", "web_rtc"}
+    else:
+        # No provider selection at all: no stream_source() call, HLS only.
+        get_provider.assert_not_awaited()
+        assert types == {"hls"}
+
+
+async def test_debug_log_explains_requests(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="custom_components.daycarewebwatch")
+    await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    await entity.stream_source()
+    assert "Camera 1: reusing stream URL issued 0s ago" in caplog.text
+    config_entry.runtime_data.status.streaming.add(1)
+    await config_entry.runtime_data.status.async_refresh()
+    assert "Status check camera 1 skipped: being watched" in caplog.text
+    assert "Viewing status: 1=open, 2=open; next check in 1:00:00" in caplog.text
+    assert "tok" not in caplog.text  # never log tokens
+
+
 async def test_status_helpers_before_data(hass: HomeAssistant, config_entry, mock_client) -> None:
     config_entry.add_to_hass(hass)
     cams = CameraListCoordinator(hass, config_entry, mock_client)
@@ -592,3 +641,5 @@ async def test_diagnostics(
     assert "secret" not in text
     assert diag["cameras"][0]["name"] == "Toddler Room"
     assert diag["viewing_status"]["1"] == {"open": True, "code": None, "message": None}
+    assert diag["request_counts"] == {"viewcamera": 2}
+    assert diag["streaming"] == []

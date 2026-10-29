@@ -31,6 +31,8 @@ async def async_get_config_entry_diagnostics(
             for camera_id, status in (data.status.data or {}).items()
         },
         "status_update_interval": str(data.status.update_interval),
+        "request_counts": dict(data.client.request_counts),
+        "streaming": sorted(data.status.streaming),
         "last_update_success": {
             "cameras": data.cameras.last_update_success,
             "status": data.status.last_update_success,
