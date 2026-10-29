@@ -21,7 +21,7 @@ account, finds the cameras you are allowed to see, and keeps the video link fres
 
 - **Camera entity** per classroom camera, with live view in dashboards and on cast devices (HLS).
 - **"Viewing available" binary sensor** per camera: on while the daycare is open and the camera is on.
-- Stream links are refreshed automatically while you watch; nobody has to re-open the app.
+- Expiring stream links are handled automatically: a new link is requested only when a stream needs one.
 - **Closed hours are handled gracefully**: at night and on weekends the camera shows as *off* (not as an
   error), and the integration checks for reopening much less often.
 - Cameras added to or removed from your account appear or become removable automatically.
@@ -94,7 +94,7 @@ after the daycare.
 | Entity | Description | Attributes |
 |---|---|---|
 | `camera.<daycare>_<camera>` | Live view. Shows *off* while viewing is not possible. | `children`, `daycare` |
-| `binary_sensor.<daycare>_<camera>_viewing_available` | On while the camera can be watched. | `reason`: `daycare_closed`, `room_inactive`, `camera_off`, `access_denied`, `camera_removed` |
+| `binary_sensor.<daycare>_<camera>_viewing_available` | On while the camera can be watched. | `reason`: the service's explanation when off (e.g. *You do not have access to this camera today*), `code`: its error code |
 
 ## How data is updated
 
@@ -103,14 +103,19 @@ This is a cloud polling integration. It keeps traffic low, especially outside op
 | What | When |
 |---|---|
 | Camera list | Every 6 hours. |
-| Viewing status, daycare open | Every 15 minutes. |
+| Viewing status, camera viewable | Every hour. |
 | Viewing status, closed during opening hours | Every 10 minutes, to catch the opening quickly. |
+| Viewing status, "no access to this camera today" | Not checked again until the next day's opening time. |
 | Viewing status, closed at night / weekends | One check at the next opening time, at most every 3 hours. |
 | Viewing status, service unreachable | Backs off from 5 up to 60 minutes. |
-| Stream link | Every 150 seconds **only while someone is watching** (the same rate as the official app). |
+| Stream link | Requested when you open a camera, and again only if a running stream fails. Idle streams are closed. |
 
-When the whole daycare is closed, only one camera per daycare is checked. No video link is requested
-unless you open a camera.
+The service has no "is this camera open?" query, so a status check opens the camera the same way the app does
+(this requests a stream link but doesn't download video). The schedule above keeps those requests rare. When
+the whole daycare is closed, only one camera per daycare is checked.
+
+Your account can list cameras that you are not allowed to watch (for example other classrooms). They appear
+with *Viewing available* off and the service's reason, and are checked at most once a day.
 
 ## Examples
 
@@ -171,7 +176,7 @@ automation:
 |---|---|
 | "Invalid authentication" during setup | Check that you can sign in to the official app with the same email and password. Google/Facebook-only accounts need a password. |
 | A repair says re-authentication is required | Your password changed. Select **Reconfigure** in the notification and enter the new password. |
-| Camera shows *off* during the day | Check the `reason` attribute of the *Viewing available* sensor. `access_denied` means your centre limits your viewing hours; `room_inactive`/`camera_off` means the centre turned it off. |
+| Camera shows *off* during the day | Check the `reason` attribute of the *Viewing available* sensor: it shows the service's message, e.g. no access to this camera today (ask your centre), or the camera is not currently available (turned off by the centre). |
 | Camera is *unavailable* | Home Assistant cannot reach DaycareWebWatch. It recovers on its own; check your internet connection. |
 | Live view fails with 404 / random "Access Denied" | Stream tokens are bound to your public IP. Networks that spread connections over several public IPs (corporate networks, some VPNs, load-balanced NAT) break them. Run Home Assistant on a connection with a single public IP; `scripts/smoke.py` prints a warning when it detects this. |
 | Live view does not start | Make sure the `stream` integration works (it is part of `default_config`). Download diagnostics and check the logs. |

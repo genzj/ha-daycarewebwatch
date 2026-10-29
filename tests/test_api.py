@@ -21,7 +21,6 @@ from custom_components.daycarewebwatch.api import (
     BASE_URL,
     IP_URL,
     Camera,
-    CameraGone,
     CannotConnect,
     DaycareWebWatchClient,
     InvalidAuth,
@@ -36,7 +35,6 @@ from .conftest import INSTANCE_ID
 LOGIN = f"{BASE_URL}/mobile/login"
 CHILDREN = f"{BASE_URL}/mobile/parentchildren"
 VIEW = f"{BASE_URL}/mobile/viewcamera"
-CHECK = f"{BASE_URL}/mobile/checkcamerapermission"
 
 CHILDREN_RESPONSE = {
     "Status": 1,
@@ -149,7 +147,7 @@ async def test_login_and_list(client: DaycareWebWatchClient, m: FakeServer) -> N
         assert m.bodies[CHILDREN][0]["SessionId"] == "sess"
 
 
-async def test_relogin_on_session_error(client: DaycareWebWatchClient, m: FakeServer) -> None:
+async def test_relogin_on_refusal(client: DaycareWebWatchClient, m: FakeServer) -> None:
     if True:
         m.get(IP_URL, text="1.2.3.4")
         m.post(LOGIN, json={"Status": 1, "SessionId": "s1"})
@@ -164,29 +162,23 @@ async def test_relogin_on_session_error(client: DaycareWebWatchClient, m: FakeSe
         assert calls[1]["ApiKey"] == expected
 
 
-async def test_invalid_auth(client: DaycareWebWatchClient, m: FakeServer) -> None:
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json={"Status": 0, "Error": 150, "Message": "bad"})
-        with pytest.raises(InvalidAuth):
-            await client.async_login()
-
-
-async def test_login_relogin_code_resets_ip(client: DaycareWebWatchClient, m: FakeServer) -> None:
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json={"Status": 0, "Error": 106})
-        with pytest.raises(CannotConnect):
-            await client.async_login()
-        assert client._public_ip is None
+@pytest.mark.parametrize("code", [150, 1, 106, "junk"])
+async def test_any_login_refusal_is_invalid_auth(
+    client: DaycareWebWatchClient, m: FakeServer, code: object
+) -> None:
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 0, "Error": code, "Message": "bad"})
+    with pytest.raises(InvalidAuth):
+        await client.async_login()
+    # The IP is re-fetched next time in case the ApiKey used a stale one.
+    assert client._public_ip is None
 
 
 async def test_unsupported_api_version(client: DaycareWebWatchClient, m: FakeServer) -> None:
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json={"Status": 1, "SessionId": "s", "APIVersion": 2.0})
-        with pytest.raises(UnsupportedApiVersion):
-            await client.async_login()
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s", "APIVersion": 2.0})
+    with pytest.raises(UnsupportedApiVersion):
+        await client.async_login()
 
 
 @pytest.mark.parametrize(
@@ -196,51 +188,107 @@ async def test_unsupported_api_version(client: DaycareWebWatchClient, m: FakeSer
 async def test_login_odd_responses(
     client: DaycareWebWatchClient, m: FakeServer, payload: dict
 ) -> None:
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json=payload)
-        if "SessionId" in payload:
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json=payload)
+    if "SessionId" in payload:
+        await client.async_login()
+    else:
+        with pytest.raises(CannotConnect):
             await client.async_login()
-        else:
-            with pytest.raises(CannotConnect):
-                await client.async_login()
 
 
-async def test_stream_url_and_closed(client: DaycareWebWatchClient, m: FakeServer) -> None:
+async def test_camera_list_refused_after_relogin(
+    client: DaycareWebWatchClient, m: FakeServer
+) -> None:
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s1"})
+    m.post(CHILDREN, json={"Status": 0, "Error": 1, "Message": "Access Denied!"})
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s2"})
+    m.post(CHILDREN, json={"Status": 0, "Error": 1, "Message": "Access Denied!"})
+    with pytest.raises(CannotConnect, match="Access Denied"):
+        await client.async_get_cameras()
+    assert len(m.bodies[LOGIN]) == 2
+
+
+async def test_stream_url(client: DaycareWebWatchClient, m: FakeServer) -> None:
     cam = Camera(1, "c", 1, "", False, "10", "d")
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json={"Status": 1, "SessionId": "s"})
-        m.post(VIEW, json={"Status": 1, "VideoToken": "wowzatoken=abc"})
-        url = await client.async_get_stream_url(cam)
-        assert url.endswith("/dcww/1.stream/playlist.m3u8?wowzatoken=abc")
-        assert m.bodies[VIEW][0]["LowBandwidth"] == "0"
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s"})
+    m.post(VIEW, json={"Status": 1, "VideoToken": "wowzatoken=abc"})
+    url = await client.async_get_stream_url(cam)
+    assert url.endswith("/dcww/1.stream/playlist.m3u8?wowzatoken=abc")
+    assert m.bodies[VIEW][0]["LowBandwidth"] == "0"
 
-        m.post(VIEW, json={"Status": 0, "Error": 254, "Message": "closed"})
-        with pytest.raises(ViewingClosed) as err:
-            await client.async_get_stream_url(cam)
-        assert err.value.code == 254
-
-        m.post(VIEW, json={"Status": 1})
-        with pytest.raises(CannotConnect):
-            await client.async_get_stream_url(cam)
+    m.post(VIEW, json={"Status": 1})
+    with pytest.raises(CannotConnect):
+        await client.async_get_stream_url(cam)
 
 
-async def test_check_permission_codes(client: DaycareWebWatchClient, m: FakeServer) -> None:
-    if True:
-        m.get(IP_URL, text="1.2.3.4")
-        m.post(LOGIN, json={"Status": 1, "SessionId": "s"})
-        m.post(CHECK, json={"Status": 1})
-        await client.async_check_permission(1)
-        m.post(CHECK, json={"Status": 0, "Error": 351})
-        with pytest.raises(ViewingClosed):
-            await client.async_check_permission(1)
-        m.post(CHECK, json={"Status": 0, "Error": 350})
-        with pytest.raises(CameraGone):
-            await client.async_check_permission(1)
-        m.post(CHECK, json={"Status": 0, "Error": "junk"})
-        with pytest.raises(CannotConnect):
-            await client.async_check_permission(1)
+@pytest.mark.parametrize("code", [23, 31, 254])
+async def test_known_refusal_no_relogin(
+    client: DaycareWebWatchClient, m: FakeServer, code: int
+) -> None:
+    cam = Camera(1, "c", 1, "", False, "10", "d")
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s"})
+    m.post(VIEW, json={"Status": 0, "Error": code, "Message": "No access today"})
+    with pytest.raises(ViewingClosed) as err:
+        await client.async_get_stream_url(cam)
+    assert err.value.code == code
+    assert err.value.message == "No access today"
+    assert len(m.bodies[LOGIN]) == 1
+    assert len(m.bodies[VIEW]) == 1
+
+
+async def test_unknown_refusal_retried_after_relogin(
+    client: DaycareWebWatchClient, m: FakeServer
+) -> None:
+    cam = Camera(1, "c", 1, "", False, "10", "d")
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s1"})
+    # Unknown code: could be a stale session or IP -> log in again, retry once.
+    m.post(VIEW, json={"Status": 0, "Error": 1, "Message": "Access Denied!"})
+    m.get(IP_URL, text="5.6.7.8")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s2"})
+    m.post(VIEW, json={"Status": 1, "VideoToken": "t"})
+    assert (await client.async_get_stream_url(cam)).endswith("?t")
+    assert m.bodies[VIEW][1]["SessionId"] == "s2"
+    expected = hashlib.md5(f"{INSTANCE_ID}5.6.7.8{API_SALT}".encode()).hexdigest()
+    assert m.bodies[VIEW][1]["ApiKey"] == expected
+
+    # Still refused after re-login: the camera is simply not viewable.
+    m.post(VIEW, json={"Status": 0, "Error": 1, "Message": "Access Denied!"})
+    m.get(IP_URL, text="5.6.7.8")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s3"})
+    m.post(VIEW, json={"Status": 0, "Error": 1, "Message": "Access Denied!"})
+    with pytest.raises(ViewingClosed, match="Access Denied"):
+        await client.async_get_stream_url(cam)
+
+
+async def test_session_error_persists(client: DaycareWebWatchClient, m: FakeServer) -> None:
+    cam = Camera(1, "c", 1, "", False, "10", "d")
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s1"})
+    m.post(VIEW, json={"Status": 0, "Error": 103})
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s2"})
+    m.post(VIEW, json={"Status": 0, "Error": 103})
+    with pytest.raises(CannotConnect):
+        await client.async_get_stream_url(cam)
+
+
+async def test_missing_error_code(client: DaycareWebWatchClient, m: FakeServer) -> None:
+    cam = Camera(1, "c", 1, "", False, "10", "d")
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s1"})
+    m.post(VIEW, json={"Status": 0, "Error": "junk"})
+    m.get(IP_URL, text="1.2.3.4")
+    m.post(LOGIN, json={"Status": 1, "SessionId": "s2"})
+    m.post(VIEW, json={"Status": 0})
+    with pytest.raises(ViewingClosed) as err:
+        await client.async_get_stream_url(cam)
+    assert err.value.code == -1
 
 
 async def test_network_errors(client: DaycareWebWatchClient, m: FakeServer) -> None:

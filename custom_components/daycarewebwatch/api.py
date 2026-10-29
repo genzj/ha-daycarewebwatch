@@ -26,34 +26,28 @@ REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 
 class ErrorCode(IntEnum):
-    """Server error codes (from the app's error enum)."""
+    """Error codes with a known meaning.
 
-    SUCCESS = 0
-    ACCESS_DENIED = 101
+    The live server does not use the numbering found in the app (it returned
+    e.g. 1 for "Access Denied!" where the app expects 101), so only codes that
+    were observed from the server get special treatment. Every other refusal
+    is handled generically using the server's message.
+    """
+
+    # Observed from the server.
+    ACCESS_DENIED = 1
+    CAMERA_DENIED_TODAY = 23  # "You do not have access to this camera today"
+    CAMERA_NOT_CURRENTLY_AVAILABLE = 31
+    # From the app; kept as hints in case the server uses them.
     INVALID_INSTANCE_ID = 102
     INVALID_SESSION_ID = 103
     INVALID_SECURITY_KEY = 104
     INVALID_SECURITY_TOKEN = 105
     IP_CHANGED = 106
-    ERROR_IN_PROCESSING_REQUEST = 107
-    INVALID_EMAIL_ADDRESS_PASSWORD = 150
-    EMAIL_NOT_VERIFIED = 154
-    ACCOUNT_NOT_FOUND = 200
-    ACCOUNT_NOT_ACTIVE = 201
-    DAYCARE_ACCESS_DENIED = 207
-    DAYCARE_NOT_ACTIVE = 251
-    DAYCARE_NOT_SUBSCRIBED = 253
     DAYCARE_CURRENTLY_CLOSED = 254
-    DAYCARE_HAS_NO_CAMERAS = 255
-    ROOM_NOT_FOUND = 300
-    ROOM_NOT_ACTIVE = 301
-    CAMERA_NOT_FOUND = 350
-    CAMERA_NOT_ACTIVE = 351
-    CAMERA_NOT_AVAILABLE = 352
-    CAMERA_ACCESS_DENIED = 353  # also "access denied today"
-    CHILD_WAS_ABSENT = 403
 
 
+# Codes that certainly mean "log in again".
 RELOGIN_CODES = frozenset(
     {
         ErrorCode.INVALID_INSTANCE_ID,
@@ -63,28 +57,16 @@ RELOGIN_CODES = frozenset(
         ErrorCode.IP_CHANGED,
     }
 )
-AUTH_CODES = frozenset(
+# Camera refusals that are certainly not caused by a stale session.
+KNOWN_REFUSAL_CODES = frozenset(
     {
-        ErrorCode.INVALID_EMAIL_ADDRESS_PASSWORD,
-        ErrorCode.EMAIL_NOT_VERIFIED,
-        ErrorCode.ACCOUNT_NOT_FOUND,
-        ErrorCode.ACCOUNT_NOT_ACTIVE,
-    }
-)
-CLOSED_CODES = frozenset(
-    {
-        ErrorCode.ACCESS_DENIED,
-        ErrorCode.DAYCARE_ACCESS_DENIED,
-        ErrorCode.DAYCARE_NOT_ACTIVE,
+        ErrorCode.CAMERA_DENIED_TODAY,
+        ErrorCode.CAMERA_NOT_CURRENTLY_AVAILABLE,
         ErrorCode.DAYCARE_CURRENTLY_CLOSED,
-        ErrorCode.ROOM_NOT_ACTIVE,
-        ErrorCode.CAMERA_NOT_ACTIVE,
-        ErrorCode.CAMERA_NOT_AVAILABLE,
-        ErrorCode.CAMERA_ACCESS_DENIED,
-        ErrorCode.CHILD_WAS_ABSENT,
     }
 )
-GONE_CODES = frozenset({ErrorCode.CAMERA_NOT_FOUND, ErrorCode.ROOM_NOT_FOUND})
+# Refusals that will not change before the next day.
+DENIED_TODAY_CODES = frozenset({ErrorCode.CAMERA_DENIED_TODAY})
 
 
 class DaycareWebWatchError(Exception):
@@ -109,14 +91,16 @@ class UnsupportedApiVersion(DaycareWebWatchError):
 
 
 class ViewingClosed(DaycareWebWatchError):
-    """Viewing is not possible right now (daycare closed, camera off, ...).
+    """The server refused to open the camera right now.
 
-    This is an expected, recurring state and not a failure.
+    Daycare closed, camera off, no access today, ... This is an expected,
+    recurring state and not a failure. `message` is the server's explanation.
     """
 
-
-class CameraGone(DaycareWebWatchError):
-    """The camera or its room no longer exists."""
+    def __init__(self, message: str = "", code: int | None = None) -> None:
+        """Initialize the error."""
+        super().__init__(message, code)
+        self.message = message
 
 
 @dataclass(slots=True)
@@ -248,7 +232,7 @@ class DaycareWebWatchClient:
 
     @staticmethod
     def _error_code(result: dict[str, Any]) -> int | None:
-        """Return None on success, otherwise the error code."""
+        """Return None on success, otherwise the error code (-1 if missing)."""
         if int(result.get("Status", 0) or 0) == 1:
             return None
         try:
@@ -257,15 +241,8 @@ class DaycareWebWatchClient:
             return -1
 
     @staticmethod
-    def _raise_for(code: int, result: dict[str, Any]) -> None:
-        message = str(result.get("Message") or "")
-        if code in AUTH_CODES:
-            raise InvalidAuth(message, code)
-        if code in CLOSED_CODES:
-            raise ViewingClosed(message, code)
-        if code in GONE_CODES:
-            raise CameraGone(message, code)
-        raise CannotConnect(message, code)
+    def _message(result: dict[str, Any]) -> str:
+        return str(result.get("Message") or "")
 
     async def async_login(self) -> None:
         """Log in and store the session token."""
@@ -283,10 +260,10 @@ class DaycareWebWatchClient:
             with_session=False,
         )
         if (code := self._error_code(result)) is not None:
-            if code in RELOGIN_CODES:
-                # Instance / IP mismatch on login itself: refresh IP and give up.
-                self._public_ip = None
-            self._raise_for(code, result)
+            # Error numbers are unreliable; a refused login is an account problem.
+            # Refresh the IP in case the ApiKey was computed from a stale one.
+            self._public_ip = None
+            raise InvalidAuth(self._message(result), code)
         try:
             api_version = float(result.get("APIVersion", SUPPORTED_API_VERSION))
         except (TypeError, ValueError):
@@ -300,38 +277,55 @@ class DaycareWebWatchClient:
             raise CannotConnect("Login response has no SessionId")
         self._session_id = str(session_id)
 
-    async def _post(self, path: str, data: dict[str, str]) -> dict[str, Any]:
-        """Send an authenticated POST, logging in again once on session errors."""
+    async def _relogin(self, stale_session: str | None) -> None:
+        """Log in again unless another call already did."""
+        async with self._login_lock:
+            if self._session_id == stale_session:
+                self._public_ip = None
+                await self._login()
+
+    async def _post(
+        self, path: str, data: dict[str, str], known_refusals: frozenset[int] = frozenset()
+    ) -> tuple[dict[str, Any], int | None]:
+        """Send an authenticated POST.
+
+        Any refusal that might be caused by a stale session (or a changed
+        public IP) is retried once after logging in again. Returns the result
+        and its error code (None on success).
+        """
         if self._session_id is None:
             await self.async_login()
         session_id = self._session_id
         result = await self._raw_post(path, data, with_session=True)
         code = self._error_code(result)
-        if code in RELOGIN_CODES:
-            _LOGGER.debug("Session rejected by %s (code %s), logging in again", path, code)
-            async with self._login_lock:
-                # Another call may already have refreshed the session.
-                if self._session_id == session_id:
-                    if code == ErrorCode.IP_CHANGED:
-                        self._public_ip = None
-                    await self._login()
+        if code is not None and code not in known_refusals:
+            _LOGGER.debug("%s refused (code %s), logging in again and retrying", path, code)
+            await self._relogin(session_id)
             result = await self._raw_post(path, data, with_session=True)
             code = self._error_code(result)
-        if code is not None:
-            self._raise_for(code, result)
-        return result
+        return result, code
 
     async def async_get_cameras(self) -> list[Camera]:
-        """Return all cameras accessible by the account."""
-        return parse_cameras(await self._post("parentchildren", {}))
-
-    async def async_check_permission(self, camera_id: int) -> None:
-        """Raise ViewingClosed/CameraGone if the camera can't be viewed now."""
-        await self._post("checkcamerapermission", {"CameraId": str(camera_id)})
+        """Return all cameras listed for the account (not all may be viewable)."""
+        result, code = await self._post("parentchildren", {})
+        if code is not None:
+            raise CannotConnect(self._message(result) or "Camera list refused", code)
+        return parse_cameras(result)
 
     async def async_get_stream_url(self, camera: Camera) -> str:
-        """Request a fresh stream token and return the playable URL."""
-        result = await self._post("viewcamera", {"CameraId": str(camera.id), "LowBandwidth": "0"})
+        """Open the camera and return a playable, freshly tokenized URL.
+
+        Raises ViewingClosed when the server refuses (closed, no access, ...).
+        """
+        result, code = await self._post(
+            "viewcamera",
+            {"CameraId": str(camera.id), "LowBandwidth": "0"},
+            known_refusals=KNOWN_REFUSAL_CODES,
+        )
+        if code is not None:
+            if code in RELOGIN_CODES:
+                raise CannotConnect(self._message(result), code)
+            raise ViewingClosed(self._message(result), code)
         token = result.get("VideoToken")
         if not token:
             raise CannotConnect("viewcamera response has no VideoToken")

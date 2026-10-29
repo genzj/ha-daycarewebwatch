@@ -57,6 +57,5 @@ def mock_client() -> Generator[AsyncMock]:
     ):
         client = cls.return_value
         client.async_get_cameras.return_value = make_cameras()
-        client.async_check_permission.return_value = None
         client.async_get_stream_url.return_value = "http://wowza1.example/s.m3u8?tok"
         yield client

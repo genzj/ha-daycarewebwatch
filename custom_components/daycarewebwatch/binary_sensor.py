@@ -46,6 +46,8 @@ class ViewingAvailableSensor(DaycareWebWatchEntity, BinarySensorEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        """Why viewing is unavailable."""
+        """Why viewing is unavailable (the server's message and code)."""
         status = self.coordinator.status(self.camera_id)
-        return {"reason": status.reason if status else None}
+        if status is None or status.is_open:
+            return {"reason": None, "code": None}
+        return {"reason": status.reason, "code": status.code}

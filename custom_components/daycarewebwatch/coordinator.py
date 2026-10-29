@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
@@ -15,8 +15,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from .api import (
+    DENIED_TODAY_CODES,
     Camera,
-    CameraGone,
     CannotConnect,
     DaycareWebWatchClient,
     ErrorCode,
@@ -46,20 +46,6 @@ _LOGGER = logging.getLogger(__name__)
 # Delay between per-camera status probes, to avoid bursts.
 PROBE_SPACING = 1.0
 
-REASONS: dict[int, str] = {
-    ErrorCode.DAYCARE_CURRENTLY_CLOSED: "daycare_closed",
-    ErrorCode.ROOM_NOT_ACTIVE: "room_inactive",
-    ErrorCode.CAMERA_NOT_ACTIVE: "camera_off",
-    ErrorCode.ACCESS_DENIED: "access_denied",
-    ErrorCode.DAYCARE_ACCESS_DENIED: "access_denied",
-    ErrorCode.CAMERA_ACCESS_DENIED: "access_denied",
-    ErrorCode.DAYCARE_NOT_ACTIVE: "daycare_closed",
-    ErrorCode.CAMERA_NOT_AVAILABLE: "camera_off",
-    ErrorCode.CHILD_WAS_ABSENT: "child_absent",
-    ErrorCode.CAMERA_NOT_FOUND: "camera_removed",
-    ErrorCode.ROOM_NOT_FOUND: "camera_removed",
-}
-
 
 @dataclass(frozen=True, slots=True)
 class ViewingStatus:
@@ -67,13 +53,14 @@ class ViewingStatus:
 
     is_open: bool
     code: int | None = None
+    message: str | None = None
 
     @property
     def reason(self) -> str | None:
-        """Translation-friendly reason for a closed camera."""
+        """The server's explanation for a closed camera."""
         if self.is_open:
             return None
-        return REASONS.get(self.code or 0, "unavailable")
+        return self.message or "Not available"
 
 
 OPEN = ViewingStatus(is_open=True)
@@ -92,7 +79,7 @@ type DaycareWebWatchConfigEntry = ConfigEntry[DaycareWebWatchData]
 
 
 class CameraListCoordinator(DataUpdateCoordinator[dict[int, Camera]]):
-    """Fetches the list of accessible cameras."""
+    """Fetches the cameras listed for the account."""
 
     config_entry: DaycareWebWatchConfigEntry
 
@@ -131,7 +118,7 @@ class CameraListCoordinator(DataUpdateCoordinator[dict[int, Camera]]):
             raise UpdateFailed(
                 translation_domain=DOMAIN, translation_key="unsupported_api_version"
             ) from err
-        except (CannotConnect, ViewingClosed, CameraGone) as err:
+        except CannotConnect as err:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="cannot_connect",
@@ -142,7 +129,14 @@ class CameraListCoordinator(DataUpdateCoordinator[dict[int, Camera]]):
 
 
 class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
-    """Tracks whether each camera is viewable, polling slowly when closed."""
+    """Tracks whether each camera is viewable, polling slowly when closed.
+
+    The only reliable way to learn whether a camera can be watched is to open
+    it (viewcamera). To keep those requests rare:
+    - open cameras are re-checked hourly,
+    - cameras refused "for today" are not asked again until the next opening,
+    - while everything is closed, checks follow the configured viewing window.
+    """
 
     config_entry: DaycareWebWatchConfigEntry
 
@@ -170,6 +164,8 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
             entry.options.get(CONF_WINDOW_DAYS, DEFAULT_WINDOW_DAYS),
         )
         self._error_interval: timedelta | None = None
+        # Cameras that must not be opened again before the given time.
+        self._hold_until: dict[int, datetime] = {}
 
     def is_open(self, camera_id: int) -> bool:
         """Return True if the camera is currently viewable."""
@@ -181,12 +177,27 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         """Return the status for a camera."""
         return None if self.data is None else self.data.get(camera_id)
 
-    def _interval_for(self, data: dict[int, ViewingStatus]) -> timedelta:
+    def _next_day_opening(self, now: datetime) -> datetime:
+        midnight = dt_util.start_of_local_day(now) + timedelta(days=1)
+        return self.window.next_start(midnight - timedelta(microseconds=1)) or midnight
+
+    def _remember(self, camera_id: int, status: ViewingStatus, now: datetime) -> None:
+        if status.is_open:
+            self._hold_until.pop(camera_id, None)
+        elif status.code in DENIED_TODAY_CODES:
+            self._hold_until[camera_id] = self._next_day_opening(now)
+
+    def _interval_for(self, data: dict[int, ViewingStatus], now: datetime) -> timedelta:
         if any(status.is_open for status in data.values()):
             return STATUS_OPEN_INTERVAL
-        return self.window.closed_interval(
-            dt_util.now(), STATUS_CLOSED_IN_WINDOW_INTERVAL, STATUS_CLOSED_MAX_INTERVAL
+        interval = self.window.closed_interval(
+            now, STATUS_CLOSED_IN_WINDOW_INTERVAL, STATUS_CLOSED_MAX_INTERVAL
         )
+        if data and all(cam_id in self._hold_until for cam_id in data):
+            # Nothing to probe until the earliest hold expires.
+            earliest = min(self._hold_until[cam_id] for cam_id in data)
+            interval = max(interval, min(earliest - now, STATUS_CLOSED_MAX_INTERVAL))
+        return interval
 
     def _log_transitions(self, data: dict[int, ViewingStatus]) -> None:
         previous = self.data or {}
@@ -201,34 +212,38 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
             if status.is_open:
                 _LOGGER.info("Camera %s is now viewable", name)
             else:
-                _LOGGER.info("Camera %s is not viewable (%s)", name, status.reason)
+                _LOGGER.info("Camera %s is not viewable: %s", name, status.reason)
 
     async def _async_update_data(self) -> dict[int, ViewingStatus]:
         cameras = self.cameras.data or {}
+        previous = self.data or {}
+        now = dt_util.now()
         data: dict[int, ViewingStatus] = {}
-        closed_daycares: set[str] = set()
-        refresh_list = False
+        closed_daycares: dict[str, ViewingStatus] = {}
         first = True
         try:
             for camera in sorted(cameras.values(), key=lambda c: (c.daycare_id, c.id)):
+                held = self._hold_until.get(camera.id)
+                if held is not None and now < held and camera.id in previous:
+                    data[camera.id] = previous[camera.id]
+                    continue
                 if camera.daycare_id in closed_daycares:
-                    # The whole daycare is closed; no need to probe its other cameras.
-                    data[camera.id] = ViewingStatus(False, ErrorCode.DAYCARE_CURRENTLY_CLOSED)
+                    # The whole daycare is closed; no need to open its other cameras.
+                    data[camera.id] = closed_daycares[camera.daycare_id]
                     continue
                 if not first:
                     await asyncio.sleep(PROBE_SPACING)
                 first = False
                 try:
-                    await self.client.async_check_permission(camera.id)
+                    await self.client.async_get_stream_url(camera)
                 except ViewingClosed as err:
-                    data[camera.id] = ViewingStatus(False, err.code)
+                    status = ViewingStatus(False, err.code, err.message)
                     if err.code == ErrorCode.DAYCARE_CURRENTLY_CLOSED:
-                        closed_daycares.add(camera.daycare_id)
-                except CameraGone as err:
-                    data[camera.id] = ViewingStatus(False, err.code)
-                    refresh_list = True
+                        closed_daycares[camera.daycare_id] = status
                 else:
-                    data[camera.id] = OPEN
+                    status = OPEN
+                data[camera.id] = status
+                self._remember(camera.id, status, now)
         except InvalidAuth as err:
             raise ConfigEntryAuthFailed(
                 translation_domain=DOMAIN, translation_key="invalid_auth"
@@ -246,10 +261,8 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
             ) from err
 
         self._error_interval = None
-        if refresh_list:
-            self.hass.async_create_task(self.cameras.async_request_refresh())
         self._log_transitions(data)
-        self.update_interval = self._interval_for(data)
+        self.update_interval = self._interval_for(data, now)
         return data
 
     def async_set_camera_status(self, camera_id: int, status: ViewingStatus) -> None:
@@ -257,7 +270,9 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         current = dict(self.data or {})
         if current.get(camera_id) == status:
             return
+        now = dt_util.now()
         current[camera_id] = status
+        self._remember(camera_id, status, now)
         self._log_transitions(current)
-        self.update_interval = self._interval_for(current)
+        self.update_interval = self._interval_for(current, now)
         self.async_set_updated_data(current)

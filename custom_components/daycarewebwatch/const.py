@@ -19,10 +19,11 @@ DEFAULT_WINDOW_END: Final = time(18, 30)
 DEFAULT_WINDOW_DAYS: Final = ["mon", "tue", "wed", "thu", "fri"]
 
 CAMERA_LIST_INTERVAL: Final = timedelta(hours=6)
-STATUS_OPEN_INTERVAL: Final = timedelta(minutes=15)
+STATUS_OPEN_INTERVAL: Final = timedelta(minutes=60)
 STATUS_CLOSED_IN_WINDOW_INTERVAL: Final = timedelta(minutes=10)
 STATUS_CLOSED_MAX_INTERVAL: Final = timedelta(hours=3)
 STATUS_ERROR_MIN_INTERVAL: Final = timedelta(minutes=5)
 STATUS_ERROR_MAX_INTERVAL: Final = timedelta(minutes=60)
-# The official app re-validates an open stream every 150 s.
-STREAM_REFRESH_INTERVAL: Final = timedelta(seconds=150)
+# How often an active stream is checked; a new token is only requested when
+# the stream has failed (tokens are not refreshed while playback is healthy).
+STREAM_CHECK_INTERVAL: Final = timedelta(seconds=60)

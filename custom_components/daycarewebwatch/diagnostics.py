@@ -27,7 +27,7 @@ async def async_get_config_entry_diagnostics(
             for camera in (data.cameras.data or {}).values()
         ],
         "viewing_status": {
-            str(camera_id): {"open": status.is_open, "code": status.code}
+            str(camera_id): {"open": status.is_open, "code": status.code, "message": status.message}
             for camera_id, status in (data.status.data or {}).items()
         },
         "status_update_interval": str(data.status.update_interval),

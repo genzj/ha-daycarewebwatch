@@ -88,16 +88,10 @@
         "name": "Viewing available",
         "state_attributes": {
           "reason": {
-            "name": "Reason",
-            "state": {
-              "daycare_closed": "Daycare closed",
-              "room_inactive": "Room closed",
-              "camera_off": "Camera off",
-              "access_denied": "Outside your access hours",
-              "child_absent": "Child marked absent today",
-              "camera_removed": "Camera removed",
-              "unavailable": "Unavailable"
-            }
+            "name": "Reason"
+          },
+          "code": {
+            "name": "Code"
           }
         }
       }
