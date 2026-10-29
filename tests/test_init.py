@@ -335,56 +335,6 @@ async def test_list_refresh_does_not_reprobe(
     assert mock_client.async_get_stream_url.await_count == calls
 
 
-async def test_stream_source_and_health_check(
-    hass: HomeAssistant,
-    mock_client: AsyncMock,
-    config_entry: MockConfigEntry,
-    frozen: FrozenDateTimeFactory,
-) -> None:
-    await setup(hass, config_entry)
-    entity = hass.data["camera"].get_entity(CAM1)
-    assert entity.is_on
-    assert await entity.stream_source() == "http://wowza1.example/s.m3u8?tok"
-    calls = mock_client.async_get_stream_url.await_count
-
-    # No stream: nothing to do.
-    await entity._async_check_stream()
-
-    # Idle stream (no viewers) is dropped.
-    idle = MagicMock(outputs=MagicMock(return_value={}), stop=AsyncMock())
-    entity.stream = idle
-    await entity._async_check_stream()
-    assert entity.stream is None
-    idle.stop.assert_awaited_once()
-
-    # Healthy stream: no token request at all.
-    active = MagicMock(outputs=MagicMock(return_value={"hls": 1}), available=True, stop=AsyncMock())
-    entity.stream = active
-    await entity._async_check_stream()
-    assert mock_client.async_get_stream_url.await_count == calls
-    active.update_source.assert_not_called()
-
-    # Failed stream: new token and restart.
-    active.available = False
-    mock_client.async_get_stream_url.return_value = "http://new?tok2"
-    await entity._async_check_stream()
-    active.update_source.assert_called_once_with("http://new?tok2")
-
-    # Transient error: keep the stream for the next check.
-    mock_client.async_get_stream_url.side_effect = CannotConnect("x")
-    await entity._async_check_stream()
-    assert entity.stream is active
-
-    # Closed while the stream was failing: stream dropped, camera off.
-    mock_client.async_get_stream_url.side_effect = CLOSED
-    await entity._async_check_stream()
-    await hass.async_block_till_done()
-    assert entity.stream is None
-    active.stop.assert_awaited()
-    assert not entity.is_on
-    assert hass.states.get(BS1).state == STATE_OFF
-
-
 async def test_health_check_timer(
     hass: HomeAssistant,
     mock_client: AsyncMock,
@@ -399,10 +349,199 @@ async def test_health_check_timer(
     failed.update_source.assert_called_once()
 
 
-async def test_stream_source_learns_closed(
-    hass: HomeAssistant, mock_client: AsyncMock, config_entry: MockConfigEntry, frozen
+FIVE_MIN = timedelta(minutes=5)
+
+
+def fake_stream(*, watched: bool = True, available: bool = True, source: str = "old") -> MagicMock:
+    return MagicMock(
+        outputs=MagicMock(return_value={"hls": 1} if watched else {}),
+        available=available,
+        source=source,
+        stop=AsyncMock(),
+        async_get_image=AsyncMock(return_value=b"frame"),
+    )
+
+
+async def test_stream_source_reuses_recent_url(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
 ) -> None:
     await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    calls = mock_client.async_get_stream_url.await_count
+    # The setup status check opened the camera moments ago: reuse that URL.
+    assert await entity.stream_source() == "http://wowza1.example/s.m3u8?tok"
+    assert mock_client.async_get_stream_url.await_count == calls
+
+    # After 4 minutes the token can no longer open connections: ask again.
+    frozen.tick(timedelta(minutes=4))
+    mock_client.async_get_stream_url.return_value = "http://new?tok2"
+    assert await entity.stream_source() == "http://new?tok2"
+    assert mock_client.async_get_stream_url.await_count == calls + 1
+    # ...and that one is reused in turn.
+    assert await entity.stream_source() == "http://new?tok2"
+    assert mock_client.async_get_stream_url.await_count == calls + 1
+
+
+async def test_status_check_reuses_viewer_url_and_skips_streaming(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    status = config_entry.runtime_data.status
+    calls = mock_client.async_get_stream_url.await_count
+    # Recently opened cameras are not opened again by the status check.
+    await status.async_refresh()
+    assert mock_client.async_get_stream_url.await_count == calls
+
+    # A camera being watched is not opened either, even much later.
+    status.streaming.add(1)
+    frozen.tick(timedelta(hours=2))
+    await status.async_refresh()
+    assert mock_client.async_get_stream_url.await_count == calls + 1  # only camera 2
+    assert status.is_open(1)
+
+
+async def test_new_viewer_gets_fresh_stream(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    first = await entity.async_create_stream()
+    assert first is not None
+    assert first.source == "http://wowza1.example/s.m3u8?tok"
+    # Fresh idle stream is reused.
+    assert await entity.async_create_stream() is first
+
+    # Idle stream whose token is too old: replaced, with a new token.
+    frozen.tick(FIVE_MIN)
+    mock_client.async_get_stream_url.return_value = "http://new?tok2"
+    second = await entity.async_create_stream()
+    assert second is not first
+    assert second.source == "http://new?tok2"
+
+    # A stream someone is watching is always reused.
+    frozen.tick(FIVE_MIN)
+    watched = fake_stream()
+    entity.stream = watched
+    assert await entity.async_create_stream() is watched
+
+
+async def test_stream_failure_repaired_immediately(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    stream = await entity.async_create_stream()
+    status = config_entry.runtime_data.status
+
+    # Simulate a watched, healthy worker: camera is marked streaming.
+    stream.add_provider("hls")
+    stream._available = True
+    entity._handle_stream_update()
+    assert 1 in status.streaming
+
+    # The worker fails after the token aged: the stream callback repairs it right away.
+    frozen.tick(FIVE_MIN)
+    mock_client.async_get_stream_url.return_value = "http://new?tok2"
+    calls = mock_client.async_get_stream_url.await_count
+    stream._available = False
+    stream.update_source = MagicMock()
+    entity._handle_stream_update()
+    await hass.async_block_till_done()
+    assert 1 not in status.streaming
+    stream.update_source.assert_called_once_with("http://new?tok2")
+    assert mock_client.async_get_stream_url.await_count == calls + 1
+
+    # Repeated failures within 30 s don't request more tokens.
+    entity._handle_stream_update()
+    await hass.async_block_till_done()
+    assert mock_client.async_get_stream_url.await_count == calls + 1
+    await stream.stop()
+
+
+async def test_health_check(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    frozen.tick(FIVE_MIN)  # setup URL expired
+    calls = mock_client.async_get_stream_url.await_count
+
+    await entity._async_check_stream()  # no stream: nothing to do
+
+    idle = fake_stream(watched=False)
+    entity.stream = idle
+    await entity._async_check_stream()
+    assert entity.stream is None
+    idle.stop.assert_awaited_once()
+
+    healthy = fake_stream()
+    entity.stream = healthy
+    await entity._async_check_stream()
+    assert mock_client.async_get_stream_url.await_count == calls
+    healthy.update_source.assert_not_called()
+
+    # Transient error: keep the stream for the next check.
+    failing = fake_stream(available=False)
+    entity.stream = failing
+    mock_client.async_get_stream_url.side_effect = CannotConnect("x")
+    await entity._async_check_stream()
+    assert entity.stream is failing
+
+    # Camera closed while the stream was failing: dropped, camera off.
+    frozen.tick(timedelta(seconds=31))
+    mock_client.async_get_stream_url.side_effect = CLOSED
+    await entity._async_check_stream()
+    await hass.async_block_till_done()
+    assert entity.stream is None
+    failing.stop.assert_awaited()
+    assert not entity.is_on
+    assert hass.states.get(BS1).state == STATE_OFF
+
+
+async def test_stills_never_contact_the_service(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    entity = hass.data["camera"].get_entity(CAM1)
+    calls = mock_client.async_get_stream_url.await_count
+    placeholder = await entity.async_camera_image()
+    assert placeholder.startswith(b"\xff\xd8")  # JPEG
+    assert entity.stream is None  # no stream was started
+
+    # While someone watches, the current frame is used and remembered.
+    entity.stream = fake_stream()
+    assert await entity.async_camera_image() == b"frame"
+    entity.stream = None
+    assert await entity.async_camera_image() == b"frame"
+    assert mock_client.async_get_stream_url.await_count == calls
+
+
+async def test_stream_source_learns_closed(
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
+) -> None:
+    await setup(hass, config_entry)
+    frozen.tick(FIVE_MIN)
     entity = hass.data["camera"].get_entity(CAM1)
     mock_client.async_get_stream_url.side_effect = DENIED_TODAY
     assert await entity.stream_source() is None
@@ -416,11 +555,15 @@ async def test_stream_source_learns_closed(
 
 
 async def test_coordinator_close_stops_stream(
-    hass: HomeAssistant, mock_client: AsyncMock, config_entry: MockConfigEntry, frozen
+    hass: HomeAssistant,
+    mock_client: AsyncMock,
+    config_entry: MockConfigEntry,
+    frozen: FrozenDateTimeFactory,
 ) -> None:
     await setup(hass, config_entry)
+    frozen.tick(FIVE_MIN)
     entity = hass.data["camera"].get_entity(CAM1)
-    stream = MagicMock(stop=AsyncMock())
+    stream = fake_stream(watched=False)
     entity.stream = stream
     mock_client.async_get_stream_url.side_effect = CLOSED
     await config_entry.runtime_data.status.async_refresh()

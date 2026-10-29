@@ -108,10 +108,14 @@ This is a cloud polling integration. It keeps traffic low, especially outside op
 | Viewing status, "no access to this camera today" | Not checked again until the next day's opening time. |
 | Viewing status, closed at night / weekends | One check at the next opening time, at most every 3 hours. |
 | Viewing status, service unreachable | Backs off from 5 up to 60 minutes. |
-| Stream link | Requested when you open a camera, and again only if a running stream fails. Idle streams are closed. |
+| Stream link | Requested when a viewer starts the stream, and again only if a running stream fails (at most every 30 s). A link issued in the last 4 minutes (e.g. by a status check) is reused. Idle streams are closed. |
+| Camera picture (thumbnails) | Never contacts the service: a placeholder, or the last frame captured while someone was watching. |
 
 The service has no "is this camera open?" query, so a status check opens the camera the same way the app does
-(this requests a stream link but doesn't download video). The schedule above keeps those requests rare. When
+(this requests a stream link but doesn't download video). The schedule above keeps those requests rare, and a
+camera that is being watched is not checked at all.
+
+Stream links can start new connections for about 5 minutes; a stream that is already playing keeps going. When
 the whole daycare is closed, only one camera per daycare is checked.
 
 Your account can list cameras that you are not allowed to watch (for example other classrooms). They appear
@@ -163,8 +167,10 @@ automation:
 
 - Outside opening hours the camera is shown as **off**. Reopening is detected within about 10 minutes during
   your configured opening hours, or at the first check at the configured opening time.
-- No snapshot endpoint exists, so the camera picture comes from the live stream and only appears while
-  viewing is available.
+- The service has no snapshot endpoint. To avoid opening the camera for every dashboard refresh, the camera
+  picture is a placeholder until someone watches the live view; after that it shows the last captured frame.
+  Use `camera_view: live` in picture cards to watch, and leave **Preload stream** (camera entity settings) off,
+  as it keeps the stream open around the clock.
 - Low-bandwidth mode, recorded videos and the other app features are not supported.
 - The service ties sessions to your public IP address. If your IP changes, the integration signs in again
   automatically.

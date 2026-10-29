@@ -38,6 +38,7 @@ from .const import (
     STATUS_ERROR_MAX_INTERVAL,
     STATUS_ERROR_MIN_INTERVAL,
     STATUS_OPEN_INTERVAL,
+    TOKEN_REUSE_MAX_AGE,
 )
 from .schedule import ViewingWindow
 
@@ -166,6 +167,25 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         self._error_interval: timedelta | None = None
         # Cameras that must not be opened again before the given time.
         self._hold_until: dict[int, datetime] = {}
+        # Most recent stream URL per camera and when its token was issued.
+        self._urls: dict[int, tuple[str, datetime]] = {}
+        # Cameras with a healthy, watched stream (set by the camera entities).
+        self.streaming: set[int] = set()
+
+    def remember_url(self, camera_id: int, url: str) -> datetime:
+        """Store a freshly issued stream URL; return its issue time."""
+        issued = dt_util.utcnow()
+        self._urls[camera_id] = (url, issued)
+        return issued
+
+    def recent_url(self, camera_id: int) -> tuple[str, datetime] | None:
+        """Return a stream URL whose token can still open connections."""
+        if (entry := self._urls.get(camera_id)) is None:
+            return None
+        if dt_util.utcnow() - entry[1] >= TOKEN_REUSE_MAX_AGE:
+            del self._urls[camera_id]
+            return None
+        return entry
 
     def is_open(self, camera_id: int) -> bool:
         """Return True if the camera is currently viewable."""
@@ -182,6 +202,8 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
         return self.window.next_start(midnight - timedelta(microseconds=1)) or midnight
 
     def _remember(self, camera_id: int, status: ViewingStatus, now: datetime) -> None:
+        if not status.is_open:
+            self._urls.pop(camera_id, None)
         if status.is_open:
             self._hold_until.pop(camera_id, None)
         elif status.code in DENIED_TODAY_CODES:
@@ -234,13 +256,19 @@ class ViewingStatusCoordinator(DataUpdateCoordinator[dict[int, ViewingStatus]]):
                 if not first:
                     await asyncio.sleep(PROBE_SPACING)
                 first = False
+                if camera.id in self.streaming or self.recent_url(camera.id) is not None:
+                    # Being watched, or opened moments ago: known to be open.
+                    data[camera.id] = OPEN
+                    continue
                 try:
-                    await self.client.async_get_stream_url(camera)
+                    url = await self.client.async_get_stream_url(camera)
                 except ViewingClosed as err:
                     status = ViewingStatus(False, err.code, err.message)
                     if err.code == ErrorCode.DAYCARE_CURRENTLY_CLOSED:
                         closed_daycares[camera.daycare_id] = status
                 else:
+                    # Keep the URL so a viewer arriving soon doesn't need another token.
+                    self.remember_url(camera.id, url)
                     status = OPEN
                 data[camera.id] = status
                 self._remember(camera.id, status, now)

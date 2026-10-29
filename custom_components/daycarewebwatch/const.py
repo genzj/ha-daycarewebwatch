@@ -27,3 +27,9 @@ STATUS_ERROR_MAX_INTERVAL: Final = timedelta(minutes=60)
 # How often an active stream is checked; a new token is only requested when
 # the stream has failed (tokens are not refreshed while playback is healthy).
 STREAM_CHECK_INTERVAL: Final = timedelta(seconds=60)
+# Stream tokens only open new connections for ~5 minutes (a running stream
+# keeps playing). URLs younger than this are reused instead of requesting
+# another token.
+TOKEN_REUSE_MAX_AGE: Final = timedelta(minutes=4)
+# Minimum time between token requests made to repair one failing stream.
+STREAM_MIN_REFRESH_INTERVAL: Final = timedelta(seconds=30)
