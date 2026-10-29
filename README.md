@@ -13,9 +13,17 @@ added to Home Assistant as a plain generic or RTSP camera. This integration sign
 account, finds the cameras you are allowed to see, and keeps the video link fresh for you.
 
 > [!IMPORTANT]
-> This is an unofficial, community-made integration. It is not affiliated with or endorsed by DaycareWebWatch.
-> It uses the same private API as the official mobile app, which may change without notice.
-> Use it for your own account only and respect your childcare centre's privacy rules.
+> **Disclaimer**
+>
+> - This is an unofficial, community-made integration. DaycareWebWatch is a trademark of its respective owner;
+>   this project is not affiliated with or endorsed by it.
+> - It uses the same private API as the official mobile app, which may change without notice.
+> - Use it for your own account only and respect your childcare centre's privacy rules.
+> - Video of children is sensitive: keep your Home Assistant instance secure and don't share camera access
+>   with others.
+> - **When opening an issue in this repository, do not upload screenshots, recordings or images that show
+>   recognizable footage or pictures from a childcare centre.** Describe the problem in text and attach logs
+>   or diagnostics instead.
 
 ## Features
 
@@ -32,7 +40,7 @@ account, finds the cameras you are allowed to see, and keeps the video link fres
 | Supported | Not supported |
 |---|---|
 | Live view of every camera your parent account can access, across all your children and daycares | Low-bandwidth (MJPEG) mode, recorded videos (VoD), photos, chat, newsletters, daily reports |
-| Email + password accounts | Google or Facebook sign-in (set a password for your account in the app first) |
+| Email + password accounts | Signing in with Google, Facebook or another single sign-on (SSO) provider. If you sign in that way, set a password for your DaycareWebWatch account first (for example with *Forgot password* in the app or on the website), then use your email and that password here. |
 
 ## Prerequisites
 
@@ -253,9 +261,17 @@ logger:
 
 ### Diagnostics
 
-Go to **Settings → Devices & services → DaycareWebWatch → ⋮ → Download diagnostics**. Email, password,
-device id, children's names and stream links are removed from the file. It includes the number of requests sent
-to the service per endpoint since start. Attach it when opening an issue.
+1. Go to **Settings → Devices & services** and click the **DaycareWebWatch** card.
+2. Find the entry row showing your account email and open the **⋮** menu **on that row**. This is not the ⋮ menu
+   at the top right of the integration page, which holds the debug logging options.
+3. Select **Download diagnostics**.
+
+The file includes the number of requests sent to the service per endpoint since start. Your email, password,
+device id, children's names and stream links are removed.
+
+> [!WARNING]
+> The **daycare name and id, and the camera names, are not removed** from the diagnostics file. If that is a
+> privacy concern, replace them in the file with a text editor before attaching it to an issue.
 
 ## Re-authentication and reconfiguration
 
@@ -328,11 +344,6 @@ uv run python -I scripts/smoke.py --email you@example.com --camera 1234 --lifeti
 
 The proxy option is for this test script only. The integration itself connects directly, so run Home Assistant
 on a network with a single public IP.
-
-## Disclaimer
-
-DaycareWebWatch is a trademark of its respective owner. This project is not affiliated with it. Video of
-children is sensitive: keep your Home Assistant instance secure and don't share camera access with others.
 
 ## License
 
