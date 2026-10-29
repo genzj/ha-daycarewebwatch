@@ -1,0 +1,19 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Manifest version matches tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version=$(python -c "import json;print(json.load(open('custom_components/daycarewebwatch/manifest.json'))['version'])")
+          test "$tag" = "$version" || { echo "Tag $tag != manifest $version"; exit 1; }

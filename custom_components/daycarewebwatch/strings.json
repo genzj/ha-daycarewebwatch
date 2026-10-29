@@ -1,0 +1,123 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to DaycareWebWatch",
+        "description": "Sign in with the parent account you use in the DaycareWebWatch app.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "email": "The email address of your DaycareWebWatch parent account.",
+          "password": "The password of your DaycareWebWatch parent account."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate DaycareWebWatch",
+        "description": "The password for {email} is no longer valid. Enter the current password.",
+        "data": {
+          "password": "Password"
+        },
+        "data_description": {
+          "password": "The password of your DaycareWebWatch parent account."
+        }
+      },
+      "reconfigure": {
+        "title": "Update DaycareWebWatch credentials",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "email": "The email address of your DaycareWebWatch parent account.",
+          "password": "The password of your DaycareWebWatch parent account."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unsupported_api_version": "The DaycareWebWatch service uses a newer API version than this integration supports. Check for an integration update.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "Account is already configured",
+      "reauth_successful": "Re-authentication was successful",
+      "reconfigure_successful": "Re-configuration was successful",
+      "wrong_account": "The email address belongs to a different account than the one configured. Add it as a new integration entry instead."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Viewing window",
+        "description": "When the daycare is normally open. Outside this window, the integration checks for reopening much less often.",
+        "data": {
+          "window_start": "Opens at",
+          "window_end": "Closes at",
+          "window_days": "Open on"
+        },
+        "data_description": {
+          "window_start": "Local time when cameras usually become viewable.",
+          "window_end": "Local time after which cameras are usually off.",
+          "window_days": "Days of the week the daycare is open."
+        }
+      }
+    },
+    "error": {
+      "end_before_start": "The closing time must be after the opening time."
+    }
+  },
+  "selector": {
+    "weekday": {
+      "options": {
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "viewing_available": {
+        "name": "Viewing available",
+        "state_attributes": {
+          "reason": {
+            "name": "Reason",
+            "state": {
+              "daycare_closed": "Daycare closed",
+              "room_inactive": "Room closed",
+              "camera_off": "Camera off",
+              "access_denied": "Outside your access hours",
+              "child_absent": "Child marked absent today",
+              "camera_removed": "Camera removed",
+              "unavailable": "Unavailable"
+            }
+          }
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_auth": {
+      "message": "DaycareWebWatch rejected the account credentials."
+    },
+    "cannot_connect": {
+      "message": "Could not communicate with DaycareWebWatch: {error}"
+    },
+    "unsupported_api_version": {
+      "message": "The DaycareWebWatch service uses an unsupported API version."
+    }
+  },
+  "issues": {
+    "unsupported_api_version": {
+      "title": "DaycareWebWatch API version not supported",
+      "description": "The DaycareWebWatch service reported a newer API version than this integration understands. Update the integration through HACS. If no update is available, open an issue on the project's GitHub page."
+    }
+  }
+}

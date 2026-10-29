@@ -1,0 +1,12 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "viewing_available": {
+        "default": "mdi:cctv-off",
+        "state": {
+          "on": "mdi:cctv"
+        }
+      }
+    }
+  }
+}
