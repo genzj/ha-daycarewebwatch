@@ -1,5 +1,7 @@
 # Changelog
 
+## Unreleased
+
 ## 1.0.0
 
 - New option **Use WebRTC (go2rtc)**, off by default: go2rtc 1.9.x crashes on these streams (affecting all
