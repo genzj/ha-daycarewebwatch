@@ -85,6 +85,7 @@ async def test_reauth(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"password": "new"})
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "reauth_successful"
+    await hass.async_block_till_done()  # let the triggered reload finish
     assert config_entry.data["password"] == "new"
     assert config_entry.data[CONF_INSTANCE_ID] == INSTANCE_ID
 
@@ -105,6 +106,7 @@ async def test_reconfigure(
         result["flow_id"], {"email": EMAIL, "password": "new"}
     )
     assert result["reason"] == "reconfigure_successful"
+    await hass.async_block_till_done()  # let the triggered reload finish
     assert config_entry.data["password"] == "new"
 
 
